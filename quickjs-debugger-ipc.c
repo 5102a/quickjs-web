@@ -788,6 +788,11 @@ void js_debugger_check(JSContext *ctx, const uint8_t *cur_pc)
     // once paused, fall through to handle the pause.
     while (!info->is_paused)
     {
+      // int peek = info->transport_peek(info->transport_udata);
+      // if (peek < 0)
+      //   goto fail;
+      // if (peek == 0)
+      //   goto done;
       if (!js_process_debugger_messages(info, cur_pc))
         goto fail;
     }
