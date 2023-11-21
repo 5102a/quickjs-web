@@ -19,6 +19,7 @@ static int js_transport_write_message_newline(JSDebuggerInfo *info,
 {
   // length prefix is 8 hex followed by newline = 012345678\n
   // not efficient, but protocol is then human readable.
+  printf("========%s",value);
   char message_length[10];
   char data[12 + len];
   char newline[2] = {'\n', '\0'};
@@ -561,7 +562,7 @@ static int js_process_debugger_messages(JSDebuggerInfo *info,
     }
 
     info->message_buffer[message_length] = '\0';
-
+    // printf("========%s",info->message_buffer);
     // 拷贝，避免内存覆盖
     char message_buffer[message_length];
     size_t len = strlen(info->message_buffer) + 1;
@@ -768,26 +769,26 @@ void js_debugger_check(JSContext *ctx, const uint8_t *cur_pc)
 
   // if not paused, we ought to peek at the stream
   // and read it without blocking until all data is consumed.
-  // if (!info->is_paused)
-  // {
-  //   // only peek at the stream every now and then.
-  //   // if (info->peek_ticks++ < 10000 && !info->should_peek)
-  //   //   goto done;
+  if (!info->is_paused)
+  {
+    // only peek at the stream every now and then.
+    if (info->peek_ticks++ < 10000 && !info->should_peek)
+      goto done;
 
-  //   // info->peek_ticks = 0;
-  //   // info->should_peek = 0;
+    info->peek_ticks = 0;
+    info->should_peek = 0;
 
-  //   // continue peek/reading until there's nothing left.
-  //   // breakpoints may arrive outside of a debugger pause.
-  //   // once paused, fall through to handle the pause.
-  //   while (!info->is_paused)
-  //   {
-  //     if (js_process_debugger_messages(info, cur_pc)<0)
-  //       goto fail;
-  //   }
-  // }
+    // continue peek/reading until there's nothing left.
+    // breakpoints may arrive outside of a debugger pause.
+    // once paused, fall through to handle the pause.
+    while (!info->is_paused)
+    {
+      if (js_process_debugger_messages(info, cur_pc) < 0)
+        goto fail;
+    }
+  }
 
-  if (js_process_debugger_messages(info, cur_pc)>=0)
+  if (js_process_debugger_messages(info, cur_pc) >= 0)
     goto done;
 
 fail:
