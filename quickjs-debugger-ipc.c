@@ -1,12 +1,10 @@
 #include "quickjs-debugger-ipc.h"
-#include "../ffi.h"
-#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
-#include <threads.h>
+#include <assert.h>
+#include "../ffi.h"
 #include <emscripten.h>
 #include <emscripten/console.h>
-#include <unistd.h>
 
 typedef struct DebuggerSuspendedState
 {
@@ -30,7 +28,7 @@ static int js_transport_write_message_newline(JSDebuggerInfo *info,
   strcpy(data, message_length);
   strcat(data, value);
   strcat(data, newline);
-  post_message(data, info->debugging_ctx);
+  post_message(info->debugging_ctx, data);
   return 1;
 }
 
@@ -246,6 +244,7 @@ static void js_process_request(JSDebuggerInfo *info,
   JSContext *ctx = info->ctx;
   JSValue command_property = JS_GetPropertyStr(ctx, request, "command");
   const char *command = JS_ToCString(ctx, command_property);
+  emscripten_console_log(command);
   if (strcmp("continue", command) == 0)
   {
     info->stepping = JS_DEBUGGER_STEP_CONTINUE;
@@ -469,38 +468,47 @@ JSValue js_debugger_file_breakpoints(JSContext *ctx, const char *path)
   return path_data;
 }
 
-EM_ASYNC_JS(char *, do_wait, (), {
-  console.log("resolve start");
+EM_ASYNC_JS(char *, js_transport_read_fully, (), {
+  let count = 0;
 
-  const response = await new Promise((rs) = > {
-    let count = 0;
-    const id = setInterval(() = > {
-      if (self.payload)
-      {
-        const payload = self.payload.shift();
-        if (payload)
-        {
-          clearInterval(id);
-          console.log("payload", payload);
+  const payload = await new Promise((rs) => {
+
+    function poll() {
+      if (globalThis.debugPayload.length) {
+        const payload = globalThis.debugPayload.shift();
+        if (payload) {
+          try{
+            const br = JSON.parse(payload.slice(9));
+            if (!br.breakpoints.path.split('.js')[0].endsWith('test2')) {
+              setTimeout(poll, 20);
+              return;
+            }
+          }catch{
+
+          }
           rs(payload);
         }
-        if (count++ >= 5)
-        {
-          count = 0;
-          clearInterval(id);
-          rs('');
-        }
+      } else if (++count >= 10) {
+        rs('');
+      } else {
+        setTimeout(poll, 20);
       }
-    },
-                           1000);
+    }
+
+    setTimeout(poll, 20);
   });
-  if (response == ='')
-  {
+
+  count = 0;
+
+
+  if (payload === '') {
     return 0;
   }
-  const len = (response.length << 2) + 1;
-  const ret = m.stackAlloc(len);
-  m.stringToUTF8(response, ret, len);
+  console.log("payload:", payload, globalThis.debugPayload.length);
+
+  const len = (payload.length << 2) + 1;
+  const ret = globalThis.wasmModule.stackAlloc(len);
+  globalThis.wasmModule.stringToUTF8(payload, ret, len);
   return ret;
 });
 
@@ -521,29 +529,21 @@ static int js_process_debugger_messages(JSDebuggerInfo *info,
   {
     // length prefix is 8 hex followed by newline = 012345678\n
     // not efficient, but protocol is then human readable.
-    // if (!info->buffer_is_full)
-    // if (!info->buffer_is_full) {
-    //   goto done;
-    // }
-    while (!info->buffer_is_full)
-    {
-      // emscripten_console_log("loop111");
-      char *c = do_wait();
-      if (c == NULL)
-      {
-        goto done;
-      }
-      info->message_buffer = c;
-      info->message_buffer_length = strlen(c);
-      info->buffer_is_full = 1;
-    }
+    char *buffer = js_transport_read_fully();
+    if (buffer == NULL)
+      continue;
 
-    info->buffer_is_full = 0;
+    info->message_buffer = buffer;
+    info->message_buffer_length = strlen(buffer);
+
+    // 获取长度，裁剪长度
     memcpy(message_length_buf, info->message_buffer, 9);
-    message_length_buf[8] = '\0';
-
     info->message_buffer += 9;
+
+    message_length_buf[8] = '\0';
     int message_length = strtol(message_length_buf, NULL, 16);
+    if (message_length <= 0)
+      continue;
     assert(message_length > 0);
     if (message_length > info->message_buffer_length)
     {
@@ -560,17 +560,15 @@ static int js_process_debugger_messages(JSDebuggerInfo *info,
       info->message_buffer_length = message_length;
     }
 
-    char *a = info->message_buffer;
     info->message_buffer[message_length] = '\0';
-    char *b = info->message_buffer;
 
-    char dest[message_length];
+    // 拷贝，避免内存覆盖
+    char message_buffer[message_length];
+    size_t len = strlen(info->message_buffer) + 1;
+    memcpy(message_buffer, info->message_buffer, len);
 
-    size_t len = strlen(info->message_buffer) + 1; // 获取源内存的长度（包括字符串结束符）
-
-    memcpy(dest, info->message_buffer, len); // 拷
     JSValue message =
-        JS_ParseJSON(ctx, dest, message_length, "<debugger>");
+        JS_ParseJSON(ctx, message_buffer, message_length, "<debugger>");
     JSValue vtype = JS_GetPropertyStr(ctx, message, "type");
     const char *type = JS_ToCString(ctx, vtype);
     if (strcmp("request", type) == 0)
@@ -599,9 +597,10 @@ static int js_process_debugger_messages(JSDebuggerInfo *info,
     JS_FreeValue(ctx, vtype);
     JS_FreeValue(ctx, message);
   } while (info->is_paused);
-done:
-  ret = 1;
 
+ret = 1;
+
+done:
   JS_FreeValue(ctx, state.variable_references);
   JS_FreeValue(ctx, state.variable_pointers);
   return ret;
@@ -672,12 +671,6 @@ void js_debugger_check(JSContext *ctx, const uint8_t *cur_pc)
     if (info->inDebug == 0)
       js_debugger_connect(ctx);
   }
-  // else if (!info->attempted_wait)
-  // {
-  //   info->attempted_wait = 1;
-  //   if (info->inDebug == 0)
-  //     js_debugger_wait_connection(ctx);
-  // }
 
   if (info->inDebug == 0)
     goto done;
@@ -708,6 +701,7 @@ void js_debugger_check(JSContext *ctx, const uint8_t *cur_pc)
     // reaching a breakpoint resets any existing stepping.
     info->stepping = 0;
     info->is_paused = 1;
+    emscripten_console_log("at_breakpoint");
     js_send_stopped_event(info, "breakpoint");
   }
   else if (info->stepping)
@@ -774,31 +768,26 @@ void js_debugger_check(JSContext *ctx, const uint8_t *cur_pc)
 
   // if not paused, we ought to peek at the stream
   // and read it without blocking until all data is consumed.
-  if (!info->is_paused)
-  {
-    // only peek at the stream every now and then.
-    if (info->peek_ticks++ < 10000 && !info->should_peek)
-      goto done;
+  // if (!info->is_paused)
+  // {
+  //   // only peek at the stream every now and then.
+  //   // if (info->peek_ticks++ < 10000 && !info->should_peek)
+  //   //   goto done;
 
-    info->peek_ticks = 0;
-    info->should_peek = 0;
+  //   // info->peek_ticks = 0;
+  //   // info->should_peek = 0;
 
-    // continue peek/reading until there's nothing left.
-    // breakpoints may arrive outside of a debugger pause.
-    // once paused, fall through to handle the pause.
-    while (!info->is_paused)
-    {
-      // int peek = info->transport_peek(info->transport_udata);
-      // if (peek < 0)
-      //   goto fail;
-      // if (peek == 0)
-      //   goto done;
-      if (!js_process_debugger_messages(info, cur_pc))
-        goto fail;
-    }
-  }
+  //   // continue peek/reading until there's nothing left.
+  //   // breakpoints may arrive outside of a debugger pause.
+  //   // once paused, fall through to handle the pause.
+  //   while (!info->is_paused)
+  //   {
+  //     if (js_process_debugger_messages(info, cur_pc)<0)
+  //       goto fail;
+  //   }
+  // }
 
-  if (js_process_debugger_messages(info, cur_pc))
+  if (js_process_debugger_messages(info, cur_pc)>=0)
     goto done;
 
 fail:
@@ -817,6 +806,7 @@ void js_debugger_free(JSRuntime *rt, JSDebuggerInfo *info)
   // teardown.
   const char *terminated =
       "{\"type\":\"event\",\"event\":{\"type\":\"terminated\"}}";
+  emscripten_console_log("js_debugger_free js_transport_write_message_newline");
   js_transport_write_message_newline(info, terminated, strlen(terminated));
 
   info->inDebug = 0;
@@ -852,7 +842,6 @@ void js_debugger_attach(JSContext *ctx,
 
   info->breakpoints = JS_NewObject(info->debugging_ctx);
   info->is_paused = 1;
-
   js_process_debugger_messages(info, NULL);
 
   info->ctx = original_ctx;
@@ -868,39 +857,7 @@ void js_debugger_cooperate(JSContext *ctx)
   js_debugger_info(JS_GetRuntime(ctx))->should_peek = 1;
 }
 
-struct js_transport_data
-{
-  int handle;
-} js_transport_data;
-
-static void js_transport_close(JSRuntime *rt, void *udata)
-{
-  struct js_transport_data *data = (struct js_transport_data *)udata;
-  if (data->handle <= 0)
-    return;
-  data->handle = 0;
-}
-
 void js_debugger_connect(JSContext *ctx)
 {
-
-  // struct js_transport_data *data;
-  // data->handle = 1;
-  js_debugger_attach(ctx, 1);
-}
-
-void js_debugger_wait_connection(JSContext *ctx)
-{
-  JSDebuggerInfo *info = js_debugger_info(JS_GetRuntime(ctx));
-
-  while (!info->buffer_is_full)
-  {
-    // emscripten_console_log("loop222");
-    // emscripten_sleep(5000);
-    do_wait();
-  }
-
-  // struct js_transport_data *data;
-  // data->handle = 1;
   js_debugger_attach(ctx, 1);
 }

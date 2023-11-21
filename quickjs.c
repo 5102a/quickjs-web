@@ -31,6 +31,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include <fenv.h>
+#include <emscripten/console.h>
 #include <math.h>
 #if defined(__APPLE__)
 #include <malloc/malloc.h>
@@ -16257,7 +16258,6 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
     const void * const * active_dispatch_table = caller_ctx->rt->debugger_info.inDebug==1
         ? debugger_dispatch_table : dispatch_table;
 #endif
-
     if (js_poll_interrupts(caller_ctx))
         return JS_EXCEPTION;
     if (unlikely(JS_VALUE_GET_TAG(func_obj) != JS_TAG_OBJECT)) {

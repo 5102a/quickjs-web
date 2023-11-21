@@ -43,9 +43,8 @@ extern "C"
     int message_buffer_length;
     int is_debugging;
     int is_paused;
-    int buffer_is_full;
     int inDebug;
-    
+
     void *transport_udata;
 
     JSValue breakpoints;
@@ -65,7 +64,6 @@ extern "C"
   void js_debugger_attach(JSContext *ctx,
                           int inDebug);
   void js_debugger_connect(JSContext *ctx);
-  void js_debugger_wait_connection(JSContext *ctx);
   int js_debugger_is_transport_connected(JSRuntime *rt);
 
   JSValue js_debugger_file_breakpoints(JSContext *ctx, const char *path);
