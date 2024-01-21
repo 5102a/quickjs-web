@@ -480,7 +480,7 @@ EM_ASYNC_JS(char *, js_transport_read_fully, (), {
         if (payload) {
           try{
             const br = JSON.parse(payload.slice(9));
-            if (!br.breakpoints.path.split('.js')[0].endsWith('test2')) {
+            if (!br.breakpoints.path.split('.js')[0].endsWith('index')) {
               setTimeout(poll, 20);
               return;
             }
